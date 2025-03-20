@@ -1,3 +1,11 @@
+/**
+ * Orca DEX Pool Implementation
+ * 
+ * This module implements the pool operations interface for Orca DEX pools.
+ * Orca is a Solana-based automated market maker (AMM) that supports both
+ * constant product and stable swap pools with concentrated liquidity.
+ */
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use serde;
@@ -24,48 +32,77 @@ use crate::pool_utils::{
 };
 use crate::constants::*;
 
+/// Represents an Orca liquidity pool with its associated accounts and parameters
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct OrcaPool {
+    /// Pool's program address
     pub address: WrappedPubkey,
+    /// Pool's nonce for PDA derivation
     pub nonce: u64,
+    /// Pool authority PDA
     pub authority: WrappedPubkey,
+    /// LP token mint address
     pub pool_token_mint: WrappedPubkey,
+    /// LP token decimal places
     pub pool_token_decimals: u64,
+    /// Account that collects fees
     pub fee_account: WrappedPubkey,
+    /// List of token IDs in the pool
     pub token_ids: Vec<String>,
+    /// Map of token data keyed by token ID
     pub tokens: HashMap<String, Token>,
+    /// Fee structure for the pool
     pub fee_structure: JSONFeeStructure,
+    /// Pool curve type (0 = ConstantProduct, 2 = Stable)
     pub curve_type: u8,
+    /// Amplification coefficient for stable pools
     #[serde(default)]
     pub amp: u64,
-    // to set later 
+    /// Current token amounts in the pool (set at runtime)
     #[serde(skip)]
     pub pool_amounts: HashMap<String, u128>
 }
 
+/// Implementation of pool operations for Orca DEX
 impl PoolOperations for OrcaPool {
+    /// Creates swap instructions for executing a trade
+    /// 
+    /// # Arguments
+    /// * `program` - The Anchor program instance
+    /// * `owner` - The owner's public key
+    /// * `mint_in` - Input token mint
+    /// * `mint_out` - Output token mint
+    /// 
+    /// # Returns
+    /// * Vector of instructions for executing the swap
     fn swap_ix(&self, 
         program: &Program,
         owner: &Pubkey,
         mint_in: &Pubkey, 
         mint_out: &Pubkey
     ) -> Vec<Instruction> {
+        // Derive swap state PDA
         let (swap_state, _) = Pubkey::find_program_address(
             &[b"swap_state"], 
             &program.id()
         );
+        
+        // Derive user token accounts
         let user_src = derive_token_address(owner, mint_in);
         let user_dst = derive_token_address(owner, mint_out); 
 
+        // Derive pool authority PDA
         let (authority_pda, _) = Pubkey::find_program_address(
             &[&self.address.to_bytes()],
             &ORCA_PROGRAM_ID 
         );
 
+        // Get pool token accounts
         let pool_src = self.mint_2_addr(mint_in);
         let pool_dst = self.mint_2_addr(mint_out);
 
+        // Build swap instruction
         let swap_ix = program
             .request()
             .accounts(tmp_accounts::OrcaSwap {
@@ -89,17 +126,26 @@ impl PoolOperations for OrcaPool {
         swap_ix
     }
 
+    /// Calculates the expected output amount for a given input amount
+    /// 
+    /// # Arguments
+    /// * `scaled_amount_in` - Input amount scaled to proper decimals
+    /// * `mint_in` - Input token mint
+    /// * `mint_out` - Output token mint
+    /// 
+    /// # Returns
+    /// * Expected output amount
     fn get_quote_with_amounts_scaled(
         &self, 
         scaled_amount_in: u128, 
         mint_in: &Pubkey,
         mint_out: &Pubkey,
     ) -> u128 {
-        
+        // Get current pool amounts
         let pool_src_amount = self.pool_amounts.get(&mint_in.to_string()).unwrap();
         let pool_dst_amount = self.pool_amounts.get(&mint_out.to_string()).unwrap();
 
-        // compute fees 
+        // Set up fee structure
         let trader_fee = &self.fee_structure.trader_fee;
         let owner_fee = &self.fee_structure.owner_fee;
         let fees = Fees {
@@ -112,6 +158,8 @@ impl PoolOperations for OrcaPool {
             host_fee_numerator: 0,
             host_fee_denominator: 0,
         };
+
+        // Determine curve type
         let ctype = if self.curve_type == 0 { 
             CurveType::ConstantProduct 
         } else if self.curve_type == 2 {
@@ -120,9 +168,7 @@ impl PoolOperations for OrcaPool {
             panic!("invalid self curve type: {:?}", self.curve_type);
         };
 
-        // get quote -- works for either constant product or stable swap 
-        
-        
+        // Calculate quote using appropriate curve formula
         get_pool_quote_with_amounts(
             scaled_amount_in,
             ctype,
@@ -134,8 +180,9 @@ impl PoolOperations for OrcaPool {
         ).unwrap()
     }
 
+    /// Returns a list of account public keys that need to be updated
     fn get_update_accounts(&self) -> Vec<Pubkey> {
-        // pool vault amount 
+        // Get pool vault accounts for all tokens
         let accounts = self
             .get_mints()
             .iter()
@@ -144,17 +191,32 @@ impl PoolOperations for OrcaPool {
         accounts 
     }
 
+    /// Checks if trading is possible between two tokens
+    /// 
+    /// # Arguments
+    /// * `_mint_in` - Input token mint
+    /// * `_mint_out` - Output token mint
+    /// 
+    /// # Returns
+    /// * Boolean indicating if trading is possible
     fn can_trade(&self, 
         _mint_in: &Pubkey,
         _mint_out: &Pubkey
     ) -> bool {
+        // Check if any pool has zero liquidity
         for amount in self.pool_amounts.values() {
             if *amount == 0 { return false; }
         }
         true
     }
 
+    /// Updates the pool's token amounts with new account data
+    /// 
+    /// # Arguments
+    /// * `accounts` - Vector of optional accounts
+    /// * `_cluster` - The Solana cluster being used
     fn set_update_accounts(&mut self, accounts: Vec<Option<Account>>, _cluster: Cluster) { 
+        // Get token IDs
         let ids: Vec<String> = self
             .get_mints()
             .iter()
@@ -163,39 +225,42 @@ impl PoolOperations for OrcaPool {
         let id0 = &ids[0];
         let id1 = &ids[1];
         
+        // Extract token amounts from account data
         let acc_data0 = &accounts[0].as_ref().unwrap().data;
         let acc_data1 = &accounts[1].as_ref().unwrap().data;
 
         let amount0 = unpack_token_account(acc_data0).amount as u128;
         let amount1 = unpack_token_account(acc_data1).amount as u128;
 
+        // Update pool amounts
         self.pool_amounts.insert(id0.clone(), amount0);
         self.pool_amounts.insert(id1.clone(), amount1);
     }
 
+    /// Returns the name of the DEX
     fn get_name(&self) -> String {
-         
         "Orca".to_string()
     }
 
+    /// Returns the token account address for a given mint
     fn mint_2_addr(&self, mint: &Pubkey) -> Pubkey {
         let token = self.tokens.get(&mint.to_string()).unwrap();
-        
         token.addr.0
     }
 
+    /// Returns the decimal scale for a given mint
     fn mint_2_scale(&self, mint: &Pubkey) -> u64 {
         let token = self.tokens.get(&mint.to_string()).unwrap();
-
         token.scale
     }
 
+    /// Returns a sorted vector of the pool's token mint addresses
     fn get_mints(&self) -> Vec<Pubkey> {
         let mut mints: Vec<Pubkey> = self.token_ids
             .iter()
             .map(|k| str2pubkey(k))
             .collect();
-        // sort so that its consistent across different pools 
+        // Sort for consistent ordering across pools
         mints.sort();
         mints
     }

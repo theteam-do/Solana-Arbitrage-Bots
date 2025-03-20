@@ -1,0 +1,59 @@
+# Rust specific ignores
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Solana specific ignores
+.anchor
+.DS_Store
+target/
+**/*.so
+**/*.dylib
+**/*.dll
+
+# IDE specific ignores
+.idea/
+.vscode/
+*.swp
+*.swo
+.env
+
+# Debug files
+*.log
+
+# Test files
+test-ledger/
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Local configuration
+config.json
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Solana Program dumps
+dump.txt
+
+# Test keypairs
+**/keypair.json
+**/*.key
+**/*.pem
+
+# Anchor specific
+.anchor/
+target/
+**/*.so
+**/*.dylib
+**/*.dll
+.coderrect/
+.coverage/
+
+# Program specific
+serum_open_orders.json 
